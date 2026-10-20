@@ -1,0 +1,62 @@
+#cgpt-dl-layer {
+  position: fixed;
+  inset: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  z-index: 2147483646;
+  pointer-events: none;
+}
+
+/* Match ChatGPT turn-action buttons (color/radius/size set from Share/Copy at runtime) */
+.cgpt-dl-btn {
+  position: fixed;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  padding: 2px;
+  border: none;
+  border-radius: 9999px;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: #cdcdcd;
+  cursor: pointer;
+  opacity: 1;
+  pointer-events: auto;
+  transform: none !important;
+}
+
+.cgpt-dl-btn:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent) !important;
+}
+
+.cgpt-dl-btn:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
+.cgpt-dl-btn[data-state="busy"] {
+  pointer-events: none;
+  cursor: wait;
+}
+
+.cgpt-dl-btn svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+  pointer-events: none;
+}
+
+.cgpt-dl-btn svg.cgpt-dl-spin {
+  animation: cgpt-dl-spin 0.7s linear infinite;
+  transform-origin: 50% 50%;
+}
+
+@keyframes cgpt-dl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
