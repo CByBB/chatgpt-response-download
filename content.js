@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.6.4";
+  const VERSION = "1.6.18";
   // Allow reinject after extension reload / version bump
   if (globalThis.__CGPT_DL_BOOTED__ === VERSION) {
     globalThis.__CGPT_DL_ALIVE__ = true;
@@ -569,46 +569,24 @@
     return luminance < 0.45;
   }
 
-  function collectCssVariables(el) {
-    const vars = {};
-    let node = el;
-    while (node && node.nodeType === 1) {
-      const style = getComputedStyle(node);
-      for (let i = 0; i < style.length; i++) {
-        const name = style[i];
-        if (name.startsWith("--") && !(name in vars)) {
-          vars[name] = style.getPropertyValue(name).trim();
-        }
-      }
-      node = node.parentElement;
-    }
-    const rootStyle = getComputedStyle(document.documentElement);
-    for (let i = 0; i < rootStyle.length; i++) {
-      const name = rootStyle[i];
-      if (name.startsWith("--") && !(name in vars)) {
-        vars[name] = rootStyle.getPropertyValue(name).trim();
-      }
-    }
-    return vars;
-  }
-
-  function cssVarsBlock(vars) {
-    return Object.entries(vars)
-      .filter(([, v]) => v)
-      .map(([k, v]) => `  ${k}: ${v};`)
-      .join("\n");
-  }
-
-  // Properties that must stay even when they match the browser default
-  const KEEP_ALWAYS = new Set([
+  /**
+   * Only visual props — dumping every computed property (and every inherited
+   * --var) on every node was producing ~50MB HTML for a short reply.
+   */
+  const INLINE_PROPS = [
     "color",
     "background",
     "background-color",
     "background-image",
+    "background-size",
+    "background-position",
+    "background-repeat",
+    "background-clip",
     "font-family",
     "font-size",
     "font-weight",
     "font-style",
+    "font-variant",
     "line-height",
     "letter-spacing",
     "white-space",
@@ -616,13 +594,32 @@
     "overflow-wrap",
     "text-align",
     "text-decoration",
-    "border",
-    "border-collapse",
-    "border-spacing",
-    "border-radius",
-    "padding",
-    "margin",
+    "text-decoration-color",
+    "text-decoration-line",
+    "text-indent",
+    "text-transform",
+    "direction",
     "display",
+    "box-sizing",
+    "width",
+    "height",
+    "max-width",
+    "min-width",
+    "max-height",
+    "min-height",
+    "padding",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+    "margin",
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+    "overflow",
+    "overflow-x",
+    "overflow-y",
     "position",
     "top",
     "right",
@@ -633,28 +630,86 @@
     "flex",
     "flex-direction",
     "flex-wrap",
+    "flex-grow",
+    "flex-shrink",
+    "flex-basis",
+    "align-items",
+    "align-self",
+    "align-content",
+    "justify-content",
+    "justify-items",
+    "justify-self",
+    "place-items",
+    "place-content",
     "gap",
     "row-gap",
     "column-gap",
+    "order",
     "grid",
     "grid-template-columns",
     "grid-template-rows",
+    "grid-template-areas",
     "grid-column",
     "grid-row",
-    "align-items",
-    "justify-content",
-    "justify-items",
-    "place-items",
-    "table-layout",
-    "vertical-align",
+    "grid-area",
+    "grid-auto-flow",
+    "border",
+    "border-top",
+    "border-right",
+    "border-bottom",
+    "border-left",
+    "border-width",
+    "border-style",
+    "border-color",
+    "border-top-width",
+    "border-right-width",
+    "border-bottom-width",
+    "border-left-width",
+    "border-top-style",
+    "border-right-style",
+    "border-bottom-style",
+    "border-left-style",
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+    "border-radius",
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-bottom-left-radius",
+    "border-bottom-right-radius",
+    "border-collapse",
+    "border-spacing",
+    "outline",
+    "outline-offset",
     "opacity",
     "box-shadow",
-    "outline",
-    "contain",
+    "filter",
+    "backdrop-filter",
+    "transform",
+    "transform-origin",
+    "object-fit",
+    "object-position",
+    "aspect-ratio",
+    "vertical-align",
+    "table-layout",
+    "list-style",
+    "list-style-type",
+    "list-style-position",
+    "column-count",
+    "columns",
     "isolation",
+    "contain",
+    "mix-blend-mode",
+    "clip-path",
     "fill",
     "stroke",
-  ]);
+    "stroke-width",
+    "stroke-dasharray",
+    "stroke-linecap",
+    "stroke-linejoin",
+  ];
+  const INLINE_PROP_SET = new Set(INLINE_PROPS);
 
   const SIZE_PROPS = new Set([
     "width",
@@ -673,15 +728,30 @@
     );
   }
 
+  function isAllowedInlineProp(name) {
+    if (INLINE_PROP_SET.has(name)) return true;
+    return (
+      name.startsWith("border") ||
+      name.startsWith("padding") ||
+      name.startsWith("margin") ||
+      name.startsWith("font") ||
+      name.startsWith("background") ||
+      name.startsWith("grid") ||
+      name.startsWith("flex")
+    );
+  }
+
   function shouldInlineProp(name, value, defaults, sourceEl) {
-    if (!value || SKIP_PROPS.has(name)) return false;
+    if (!value || SKIP_PROPS.has(name) || name.startsWith("--")) return false;
+    if (!isAllowedInlineProp(name)) return false;
     if (
       (value === "none" || value === "normal" || value === "auto") &&
       (name === "box-shadow" ||
         name === "text-decoration" ||
         name === "background-image" ||
         name === "transform" ||
-        name === "filter")
+        name === "filter" ||
+        name === "outline")
     ) {
       return false;
     }
@@ -691,18 +761,21 @@
       const v = value.trim();
       if (/px$/i.test(v) || /^[0-9.]+$/.test(v)) return false;
     }
-    if (
-      defaults &&
-      !KEEP_ALWAYS.has(name) &&
-      !name.startsWith("border") &&
-      !name.startsWith("padding") &&
-      !name.startsWith("margin") &&
-      !name.startsWith("font") &&
-      defaults.getPropertyValue(name) === value
-    ) {
-      return false;
-    }
+    if (defaults && defaults.getPropertyValue(name) === value) return false;
     return true;
+  }
+
+  /** Own style="" --vars only (never dump the full inherited token set). */
+  function ownCssVarsFromStyleAttr(el) {
+    const vars = new Map();
+    const inlineAttr = el.getAttribute("style") || "";
+    inlineAttr.split(";").forEach((chunk) => {
+      const t = chunk.trim();
+      if (!t.startsWith("--")) return;
+      const i = t.indexOf(":");
+      if (i > 0) vars.set(t.slice(0, i).trim(), t.slice(i + 1).trim());
+    });
+    return vars;
   }
 
   function inlineOneNode(source, clone, defaults) {
@@ -710,32 +783,27 @@
     const computed = getComputedStyle(source);
     const parts = [];
 
-    // Preserve CSS variables — writing-blocks / grids / tables depend on --oai-wb-* etc.
-    const vars = new Map();
-    const inlineAttr = source.getAttribute("style") || "";
-    inlineAttr.split(";").forEach((chunk) => {
-      const t = chunk.trim();
-      if (!t.startsWith("--")) return;
-      const i = t.indexOf(":");
-      if (i > 0) vars.set(t.slice(0, i).trim(), t.slice(i + 1).trim());
-    });
-    for (let i = 0; i < computed.length; i++) {
-      const name = computed[i];
-      if (!name.startsWith("--")) continue;
-      const value = computed.getPropertyValue(name).trim();
-      if (value) vars.set(name, value);
+    for (const [k, v] of ownCssVarsFromStyleAttr(source)) {
+      if (v) parts.push(`${k}:${v}`);
     }
-    for (const [k, v] of vars) parts.push(`${k}:${v}`);
 
-    for (let i = 0; i < computed.length; i++) {
-      const name = computed[i];
-      if (name.startsWith("--")) continue;
+    const isTableChrome = /^(TR|TD|TH|TABLE|TBODY|THEAD|TFOOT)$/i.test(source.tagName || "");
+    for (const name of INLINE_PROPS) {
+      // Never bake focus/selection side borders into table chrome
+      if (
+        isTableChrome &&
+        (/^border-(top|right|left)(-|$)/i.test(name) ||
+          name === "outline" ||
+          name === "outline-offset" ||
+          name === "box-shadow")
+      ) {
+        continue;
+      }
       const value = computed.getPropertyValue(name);
       if (shouldInlineProp(name, value, defaults, source)) parts.push(`${name}:${value}`);
     }
 
     // Sticky headers / fixed chrome break offline docs — pin them into normal flow.
-    // Keep relative/absolute (email frames, table overlays, grid cards need them).
     const pos = computed.position;
     if (pos === "sticky") {
       parts.push("position:relative");
@@ -745,6 +813,39 @@
     }
 
     if (parts.length) clone.setAttribute("style", parts.join(";"));
+    else clone.removeAttribute("style");
+  }
+
+  /** Resolve only CSS variables still referenced as var(--…) in the export. */
+  function collectUsedCssVariables(liveRoot, cloneRoot, authorCss) {
+    const used = new Set();
+    const haystack = `${cloneRoot.outerHTML}\n${authorCss || ""}`;
+    const re = /var\(\s*(--[\w-]+)/g;
+    let m;
+    while ((m = re.exec(haystack))) used.add(m[1]);
+    // Writing-block / widget tokens often set on a container style attr
+    qsa(liveRoot, "[style*='--']").forEach((el) => {
+      for (const [k] of ownCssVarsFromStyleAttr(el)) used.add(k);
+    });
+    qsa(cloneRoot, "[style*='--']").forEach((el) => {
+      for (const [k] of ownCssVarsFromStyleAttr(el)) used.add(k);
+    });
+
+    const vars = {};
+    const rootStyle = getComputedStyle(document.documentElement);
+    const liveStyle = getComputedStyle(liveRoot);
+    for (const name of used) {
+      const v = (liveStyle.getPropertyValue(name) || rootStyle.getPropertyValue(name) || "").trim();
+      if (v) vars[name] = v;
+    }
+    return vars;
+  }
+
+  function cssVarsBlock(vars) {
+    return Object.entries(vars)
+      .filter(([, v]) => v)
+      .map(([k, v]) => `  ${k}: ${v};`)
+      .join("\n");
   }
 
   function inlineComputedStyles(source, clone, defaults) {
@@ -772,6 +873,361 @@
     await walk(source, clone);
   }
 
+  function setImportant(el, prop, value) {
+    try {
+      el.style.setProperty(prop, value, "important");
+    } catch {
+      el.style[prop] = value;
+    }
+  }
+
+  /** Halve inlined line-height gaps; add horizontal padding on code surfaces. */
+  function tightenMonospaceBlocks(cloneRoot) {
+    const roots = qsa(
+      cloneRoot,
+      'pre, [data-code-block], [class*="CodeBlock"], [class*="code-block"], [class*="CodeSurface"]'
+    );
+
+    const halfLineHeight = (el) => {
+      const lh = (el.style.lineHeight || "").trim();
+      if (!lh || lh === "normal") return;
+      const m = lh.match(/^([\d.]+)(px|rem|em)?$/i);
+      if (!m) return;
+      const n = parseFloat(m[1]);
+      if (!Number.isFinite(n) || n <= 0) return;
+      const unit = (m[2] || "").toLowerCase();
+      if (unit === "px") {
+        const fs = parseFloat(el.style.fontSize) || 12;
+        const gap = Math.max(0, n - fs);
+        setImportant(el, "line-height", `${Math.max(fs * 1.15, fs + gap / 2)}px`);
+      } else if (!unit && n >= 1 && n < 5) {
+        setImportant(el, "line-height", String(Math.max(1.15, 1 + (n - 1) / 2)));
+      } else if (unit === "rem" || unit === "em") {
+        setImportant(el, "line-height", `${Math.max(1.15, 1 + (n - 1) / 2)}${unit}`);
+      }
+    };
+
+    roots.forEach((root) => {
+      setImportant(root, "padding-left", "1.25rem");
+      setImportant(root, "padding-right", "1.25rem");
+      halfLineHeight(root);
+      qsa(root, "*").forEach((el) => halfLineHeight(el));
+      // Avoid double horizontal padding on nested <code>
+      qsa(root, "code").forEach((code) => {
+        setImportant(code, "padding-left", "0");
+        setImportant(code, "padding-right", "0");
+      });
+      // Colored shell (Root-*) often holds the visible background — pad it too
+      let shell = root;
+      for (let i = 0; i < 5 && shell; i++) {
+        const bg = (shell.style.backgroundColor || shell.style.background || "").toLowerCase();
+        if (/rgb|#|hsl|var\(--/.test(bg) && !/transparent|rgba\(0,\s*0,\s*0,\s*0\)/.test(bg)) {
+          const pl = parseFloat(shell.style.paddingLeft) || 0;
+          if (pl < 12) {
+            setImportant(shell, "padding-left", "1.25rem");
+            setImportant(shell, "padding-right", "1.25rem");
+          }
+          break;
+        }
+        shell = shell.parentElement;
+      }
+    });
+
+    // Inline `code` chips outside blocks
+    qsa(cloneRoot, "code").forEach((code) => {
+      if (code.closest("pre, [data-code-block], [class*='CodeBlock'], [class*='code-block']")) return;
+      halfLineHeight(code);
+      setImportant(code, "padding-left", "0.4em");
+      setImportant(code, "padding-right", "0.4em");
+    });
+  }
+
+  /**
+   * Tables: left-align, content-sized columns, no focus/selection chrome.
+   * Focused rows often inline border-*-style:solid WITHOUT width:0 — browsers
+   * then paint a medium box (the white highlight around Diff/patch).
+   */
+  function sanitizeTable(table) {
+    if (!(table instanceof HTMLElement)) return;
+
+    setImportant(table, "border", "none");
+    setImportant(table, "outline", "none");
+    setImportant(table, "box-shadow", "none");
+    setImportant(table, "text-align", "left");
+
+    qsa(table, "colgroup, col").forEach((el) => el.remove());
+
+    qsa(table, "tr").forEach((tr) => {
+      setImportant(tr, "outline", "none");
+      setImportant(tr, "outline-width", "0");
+      setImportant(tr, "outline-style", "none");
+      setImportant(tr, "box-shadow", "none");
+      setImportant(tr, "background", "transparent");
+      setImportant(tr, "background-color", "transparent");
+      setImportant(tr, "border", "none");
+      setImportant(tr, "border-width", "0");
+      setImportant(tr, "border-style", "none");
+      setImportant(tr, "border-top", "none");
+      setImportant(tr, "border-right", "none");
+      setImportant(tr, "border-bottom", "none");
+      setImportant(tr, "border-left", "none");
+      setImportant(tr, "border-top-width", "0");
+      setImportant(tr, "border-right-width", "0");
+      setImportant(tr, "border-bottom-width", "0");
+      setImportant(tr, "border-left-width", "0");
+      setImportant(tr, "border-top-style", "none");
+      setImportant(tr, "border-right-style", "none");
+      setImportant(tr, "border-bottom-style", "none");
+      setImportant(tr, "border-left-style", "none");
+      tr.removeAttribute("data-state");
+      tr.removeAttribute("aria-selected");
+      tr.removeAttribute("tabindex");
+    });
+
+    qsa(table, "th, td").forEach((cell) => {
+      setImportant(cell, "text-align", "left");
+      setImportant(cell, "vertical-align", "middle");
+      setImportant(cell, "outline", "none");
+      setImportant(cell, "outline-width", "0");
+      setImportant(cell, "outline-style", "none");
+      setImportant(cell, "box-shadow", "none");
+      setImportant(cell, "background", "transparent");
+      setImportant(cell, "background-color", "transparent");
+      // Kill focus rings that use side/top borders; keep a light row rule
+      setImportant(cell, "border-top", "none");
+      setImportant(cell, "border-right", "none");
+      setImportant(cell, "border-left", "none");
+      setImportant(cell, "border-top-width", "0");
+      setImportant(cell, "border-right-width", "0");
+      setImportant(cell, "border-left-width", "0");
+      setImportant(cell, "border-top-style", "none");
+      setImportant(cell, "border-right-style", "none");
+      setImportant(cell, "border-left-style", "none");
+      setImportant(cell, "border-bottom", "1px solid rgba(255,255,255,0.08)");
+      // Match ChatGPT density (nested <p> margins zeroed below).
+      setImportant(cell, "padding-top", "8px");
+      setImportant(cell, "padding-bottom", "8px");
+      setImportant(cell, "line-height", "1.45");
+      setImportant(cell, "height", "auto");
+      setImportant(cell, "min-height", "0");
+      // Drop forced widths that leave a huge empty first column
+      cell.style.removeProperty("width");
+      cell.style.removeProperty("min-width");
+      cell.style.removeProperty("max-width");
+      setImportant(cell, "width", "auto");
+      setImportant(cell, "min-width", "0");
+      setImportant(cell, "max-width", "none");
+      cell.removeAttribute("tabindex");
+      cell.removeAttribute("aria-selected");
+      cell.removeAttribute("data-state");
+
+      qsa(cell, "p, div, span, li").forEach((inner) => {
+        setImportant(inner, "margin", "0");
+        setImportant(inner, "margin-top", "0");
+        setImportant(inner, "margin-bottom", "0");
+        setImportant(inner, "padding-top", "0");
+        setImportant(inner, "padding-bottom", "0");
+        if (!/^CODE$/i.test(inner.tagName)) {
+          const lh = (inner.style.lineHeight || "").trim();
+          if (/px$/i.test(lh)) {
+            const n = parseFloat(lh);
+            const fs = parseFloat(inner.style.fontSize) || 14;
+            if (n > fs * 1.4) setImportant(inner, "line-height", "1.35");
+          } else {
+            setImportant(inner, "line-height", "1.35");
+          }
+        }
+      });
+    });
+
+    // First column: hug label text; remaining columns share leftover space
+    const rows = qsa(table, "tr");
+    if (!rows.length) return;
+    rows.forEach((tr) => {
+      const cells = qsa(tr, "th, td");
+      if (!cells.length) return;
+      // Match ChatGPT: first col pad-right, later cols pad-left — but tighter
+      setImportant(cells[0], "padding-left", "0");
+      setImportant(cells[0], "padding-right", "14px");
+      setImportant(cells[0], "width", "max-content");
+      setImportant(cells[0], "white-space", "nowrap");
+      for (let i = 1; i < cells.length; i++) {
+        setImportant(cells[i], "padding-left", "14px");
+        setImportant(cells[i], "padding-right", i === cells.length - 1 ? "0" : "14px");
+        setImportant(cells[i], "width", "auto");
+        setImportant(cells[i], "white-space", "normal");
+      }
+    });
+  }
+
+  /**
+   * Icon + title feature lists (Mermaid / Architecture cards). Export often
+   * lost horizontal padding (0 !important) so items sat flush — restore GPT spacing.
+   */
+  function polishFeatureCards(cloneRoot) {
+    // Undo mistaken padding on whole-response roots from older builds
+    qsa(cloneRoot, "[class*='DilRenderer'], [class*='DilResponse'], [class*='PortalBoundary']").forEach(
+      (el) => {
+        if (el === cloneRoot) return;
+        // Only clear if we clearly over-padded a giant host
+        const iconRows = qsa(el, '[data-d-component="row"]').filter(
+          (r) => r.querySelector("svg") && r.querySelector("p")
+        );
+        const tables = qsa(el, "table").length;
+        if (tables > 0 || iconRows.length < 2) return;
+        // If this node also contains headings outside the card, it's a response root
+        if (qs(el, "h1, h2, h3") && !/border-radius/i.test(el.getAttribute("style") || "")) {
+          setImportant(el, "padding-left", "0");
+          setImportant(el, "padding-right", "0");
+          setImportant(el, "padding-top", "0");
+          setImportant(el, "padding-bottom", "0");
+        }
+      }
+    );
+
+    const dividers = qsa(cloneRoot, '[data-d-component="divider"], [class*="Divider"]');
+    dividers.forEach((div) => {
+      // ChatGPT dividers are a 1px rule — inlined line-height:26px made huge gaps
+      setImportant(div, "padding-top", "10px");
+      setImportant(div, "padding-bottom", "10px");
+      setImportant(div, "margin-top", "0");
+      setImportant(div, "margin-bottom", "0");
+      setImportant(div, "line-height", "0");
+      setImportant(div, "font-size", "0");
+      setImportant(div, "min-height", "0");
+      setImportant(div, "height", "auto");
+    });
+
+    // Rows: icon + text stack
+    qsa(cloneRoot, '[data-d-component="row"], [data-d-direction="row"]').forEach((row) => {
+      const hasIcon = !!row.querySelector("svg");
+      const hasTitle = !!row.querySelector("p, h1, h2, h3, h4, strong, [data-d-default-strong]");
+      if (!hasIcon || !hasTitle) return;
+      if (row.closest("table, pre, [data-code-block]")) return;
+
+      setImportant(row, "display", "flex");
+      setImportant(row, "align-items", "flex-start");
+      setImportant(row, "gap", "12px");
+      setImportant(row, "column-gap", "12px");
+      setImportant(row, "row-gap", "12px");
+
+      // Text column: tight title ↔ body like GPT (~4–6px)
+      [...row.children].forEach((child) => {
+        if (child.querySelector("svg") && !child.querySelector("p")) return;
+        if (
+          /flex/i.test(child.style.display || "") ||
+          child.getAttribute("data-d-direction") === "col"
+        ) {
+          setImportant(child, "gap", "4px");
+          setImportant(child, "row-gap", "4px");
+        }
+      });
+
+      qsa(row, "p, h1, h2, h3, h4").forEach((p) => {
+        setImportant(p, "margin", "0");
+        setImportant(p, "margin-top", "0");
+        setImportant(p, "margin-bottom", "0");
+        const lh = (p.style.lineHeight || "").trim();
+        if (/px$/i.test(lh) && parseFloat(lh) >= 24) {
+          setImportant(p, "line-height", "1.35");
+        }
+      });
+
+      const iconBox = [...row.children].find((c) => c.querySelector("svg"));
+      if (iconBox) {
+        setImportant(iconBox, "flex-shrink", "0");
+        setImportant(iconBox, "margin-top", "0.1em");
+      }
+    });
+
+    const padFeatureHost = (card) => {
+      // Match GPT card inset — sides matter more than vertical bulk
+      setImportant(card, "padding", "12px 16px");
+      setImportant(card, "box-sizing", "border-box");
+    };
+
+    const isActualFeatureCard = (el) => {
+      if (!(el instanceof HTMLElement)) return false;
+      if (el.closest("table, pre, [data-code-block], .cgpt-dl-diagram")) return false;
+      const cls = el.className?.toString?.() || "";
+      // Never pad response / portal roots (bug in 1.6.11)
+      if (/DilRenderer|DilResponse|PortalBoundary|Renderer-/i.test(cls)) return false;
+      if (el === cloneRoot) return false;
+
+      const style = el.getAttribute("style") || "";
+      const hasRadius = /border-radius\s*:\s*[^;]*\d/i.test(style) || /rounded/i.test(cls);
+      const hasBorder =
+        /border(?:-width)?\s*:\s*(?!0(?:px)?\b)[^;]+/i.test(style) ||
+        /border\s*:\s*\d+px\s+solid/i.test(style);
+      if (!hasRadius && !hasBorder) return false;
+
+      const rows = qsa(el, '[data-d-component="row"], [data-d-direction="row"]');
+      const iconRows = rows.filter((r) => r.querySelector("svg") && r.querySelector("p"));
+      if (iconRows.length < 2) return false;
+
+      // Card should be roughly the feature list — not the whole article
+      if (qsa(el, "table, h1, h2").length > 2) return false;
+      return true;
+    };
+
+    qsa(cloneRoot, "[style*='border-radius'], [style*='border:'] , [class*='rounded']").forEach(
+      (card) => {
+        if (!isActualFeatureCard(card)) return;
+        padFeatureHost(card);
+      }
+    );
+  }
+
+  /**
+   * ChatGPT “breakout” tables use padding-left:~405px + margin-left:-405px so the
+   * table can span the thread column. In a standalone export that padding just
+   * eats the width and leaves a skinny table — strip it.
+   */
+  function undoBreakoutLayout(el) {
+    if (!(el instanceof HTMLElement)) return;
+    // Never strip Dil selector / card gutters (those are ~12–16px, not table breakout)
+    if (
+      el.matches?.(
+        '[data-d-component="pressable"], [data-d-component="radio"], [data-d-component="radio-group"], [data-d-has-border], [data-cgpt-dl-static], [class*="Radio"], [class*="Pressable"]'
+      ) ||
+      el.closest?.(
+        '[data-d-component="pressable"], [data-d-component="radio-group"], [data-cgpt-dl-static], [class*="generated-image-preview"]'
+      )
+    ) {
+      return;
+    }
+
+    const pl = parseFloat(el.style.paddingLeft) || 0;
+    const pr = parseFloat(el.style.paddingRight) || 0;
+    const ml = el.style.marginLeft || "";
+    const mr = el.style.marginRight || "";
+    const pad = el.style.padding || "";
+    const mar = el.style.margin || "";
+    const styleAttr = el.getAttribute("style") || "";
+    // Real breakout uses ~200–400px+; do NOT match normal 12px/16px gutters (\d{2,} was wrong)
+    const bigPad =
+      pl >= 80 ||
+      pr >= 80 ||
+      /\d{3,}px/.test(pad) ||
+      /padding(?:-left|-right):\s*\d{3,}px/i.test(styleAttr);
+    const negMar = /^-/.test(ml.trim()) || /^-/.test(mr.trim()) || /-\d+px/.test(mar);
+    if (!bigPad && !negMar) return;
+
+    setImportant(el, "padding-left", "0");
+    setImportant(el, "padding-right", "0");
+    setImportant(el, "margin-left", "0");
+    setImportant(el, "margin-right", "0");
+    if (/\d{3,}px/.test(pad) || /-\d+px/.test(pad)) {
+      setImportant(el, "padding", "0");
+    }
+    if (/-\d+px/.test(mar) || /\d{3,}px/.test(mar)) {
+      // keep vertical margins if we can parse 3/4-value; safest reset horizontal only
+      const top = el.style.marginTop || "0";
+      const bottom = el.style.marginBottom || "0";
+      setImportant(el, "margin", `${top || "0"} 0 ${bottom || "0"} 0`);
+    }
+  }
+
   /** Make the export fluid — undo ChatGPT column / scrollport constraints */
   function normalizeExportLayout(cloneRoot) {
     if (!(cloneRoot instanceof HTMLElement)) return;
@@ -783,49 +1239,534 @@
     cloneRoot.style.marginRight = "0";
     cloneRoot.style.boxSizing = "border-box";
 
+    // Strip breakout padding/margin anywhere (tables, wide code, diagrams)
+    qsa(cloneRoot, "[style]").forEach(undoBreakoutLayout);
+
     qsa(
       cloneRoot,
-      '[data-markdown-table], [class*="TableContainer"], [class*="TableScroller"], [class*="TableWrapper"], [class*="TableFrame"]'
+      '[data-markdown-table], [class*="TableContainer"], [class*="TableScroller"], [class*="TableWrapper"], [class*="TableFrame"], table'
     ).forEach((el) => {
-      el.style.width = "100%";
-      el.style.maxWidth = "100%";
-      el.style.minWidth = "0";
-      el.style.height = "auto";
-      el.style.maxHeight = "none";
-      el.style.overflow = "visible";
-      el.style.overflowX = "auto";
-      el.style.overflowY = "visible";
-      el.style.contain = "none";
+      if (el.tagName === "TABLE") return;
+      undoBreakoutLayout(el);
+      setImportant(el, "display", "block");
+      setImportant(el, "width", "100%");
+      setImportant(el, "max-width", "100%");
+      setImportant(el, "min-width", "0");
+      setImportant(el, "height", "auto");
+      setImportant(el, "max-height", "none");
+      setImportant(el, "overflow-x", "auto");
+      setImportant(el, "overflow-y", "visible");
+      setImportant(el, "contain", "none");
+      setImportant(el, "padding-left", "0");
+      setImportant(el, "padding-right", "0");
+      setImportant(el, "margin-left", "0");
+      setImportant(el, "margin-right", "0");
+    });
+
+    // Also fix direct parents of tables (often the breakout host)
+    qsa(cloneRoot, "table").forEach((table) => {
+      let node = table.parentElement;
+      for (let i = 0; i < 4 && node && node !== cloneRoot; i++) {
+        undoBreakoutLayout(node);
+        setImportant(node, "width", "100%");
+        setImportant(node, "max-width", "100%");
+        setImportant(node, "padding-left", "0");
+        setImportant(node, "padding-right", "0");
+        setImportant(node, "margin-left", "0");
+        setImportant(node, "margin-right", "0");
+        node = node.parentElement;
+      }
     });
 
     qsa(cloneRoot, "table").forEach((el) => {
-      el.style.width = "100%";
-      el.style.maxWidth = "100%";
-      el.style.height = "auto";
-      el.style.display = "table";
+      undoBreakoutLayout(el);
+      setImportant(el, "display", "table");
+      setImportant(el, "width", "100%");
+      setImportant(el, "max-width", "100%");
+      setImportant(el, "min-width", "0");
+      setImportant(el, "height", "auto");
+      // auto: first cols hug labels, last col takes remaining width
+      setImportant(el, "table-layout", "auto");
+      setImportant(el, "padding-left", "0");
+      setImportant(el, "padding-right", "0");
+      setImportant(el, "margin-left", "0");
+      setImportant(el, "margin-right", "0");
     });
+
+    qsa(cloneRoot, "table").forEach((table) => sanitizeTable(table));
 
     qsa(
       cloneRoot,
       '[data-code-block], pre, [class*="CodeBlock"], [class*="code-block"], [class*="CodeSurface"]'
     ).forEach((el) => {
-      el.style.width = "100%";
-      el.style.maxWidth = "100%";
-      el.style.minWidth = "0";
-      el.style.boxSizing = "border-box";
-      el.style.overflowX = "auto";
+      setImportant(el, "width", "100%");
+      setImportant(el, "max-width", "100%");
+      setImportant(el, "min-width", "0");
+      setImportant(el, "box-sizing", "border-box");
+      setImportant(el, "overflow-x", "auto");
     });
 
+    tightenMonospaceBlocks(cloneRoot);
+
     qsa(cloneRoot, '[data-wide-block], [class*="chatgptPaletteBoundary"]').forEach((el) => {
-      el.style.width = "100%";
-      el.style.maxWidth = "100%";
-      el.style.minWidth = "0";
-      el.style.marginLeft = "0";
-      el.style.marginRight = "0";
+      setImportant(el, "width", "100%");
+      setImportant(el, "max-width", "100%");
+      setImportant(el, "min-width", "0");
+      setImportant(el, "margin-left", "0");
+      setImportant(el, "margin-right", "0");
+    });
+
+    // Center diagrams / chart images
+    qsa(cloneRoot, ".cgpt-dl-diagram, img[alt='Rendered diagram']").forEach((el) => {
+      setImportant(el, "display", el.tagName === "IMG" ? "block" : "flex");
+      if (el.tagName !== "IMG") setImportant(el, "justify-content", "center");
+      setImportant(el, "margin-left", "auto");
+      setImportant(el, "margin-right", "auto");
+      setImportant(el, "max-width", "100%");
+    });
+    qsa(cloneRoot, ".cgpt-dl-diagram svg").forEach((el) => {
+      setImportant(el, "display", "block");
+      setImportant(el, "margin-left", "auto");
+      setImportant(el, "margin-right", "auto");
+    });
+
+    // Center display math only (not inline $…$)
+    qsa(
+      cloneRoot,
+      '.katex-display, .math-display, [class*="katex-display"], span.katex-display, div.katex-display, mjx-container[display="true"], [data-testid*="math-block" i]'
+    ).forEach((el) => {
+      setImportant(el, "display", "block");
+      setImportant(el, "text-align", "center");
+      setImportant(el, "margin-left", "auto");
+      setImportant(el, "margin-right", "auto");
+      setImportant(el, "width", "100%");
+    });
+    // ChatGPT often leaves block formulas as a lone .katex inside a paragraph
+    qsa(cloneRoot, ".katex").forEach((el) => {
+      if (el.closest(".katex-display, .math-display, mjx-container[display='true']")) return;
+      const parent = el.parentElement;
+      if (!parent || !/^(P|DIV)$/i.test(parent.tagName)) return;
+      if (parent.querySelector("p, li, table, pre, code, img, .katex-display")) return;
+      const onlyMath =
+        [...parent.childNodes].every(
+          (n) =>
+            n === el ||
+            (n.nodeType === 3 && !n.textContent.trim()) ||
+            (n.nodeType === 1 && (n === el || el.contains(n) || n.classList?.contains("katex")))
+        ) && (parent.textContent || "").replace(/\s+/g, "").length > 0;
+      if (!onlyMath) return;
+      // Skip tiny inline fragments sitting mid-sentence wrappers
+      if ((parent.textContent || "").trim().length < 3) return;
+      setImportant(parent, "text-align", "center");
+      setImportant(parent, "display", "block");
+      setImportant(parent, "width", "100%");
+    });
+
+    // Icon + title rows: center icon on the title line (not top-stuck)
+    qsa(cloneRoot, "svg").forEach((svg) => {
+      if (svg.closest(".cgpt-dl-diagram")) return;
+      const parent = svg.parentElement;
+      if (!parent) return;
+      const display = (parent.style.display || "").toLowerCase();
+      const flexish = display.includes("flex");
+      const kids = [...parent.children];
+      if (!flexish && kids.length > 4) return;
+
+      if (flexish) {
+        const sibling = kids.find((c) => c !== svg);
+        const siblingIsTitleOnly =
+          sibling &&
+          (/^H[1-6]$/i.test(sibling.tagName) ||
+            ((sibling.textContent || "").trim().length < 80 &&
+              !sibling.querySelector("p, li, ul, ol")));
+        if (siblingIsTitleOnly) {
+          setImportant(parent, "align-items", "center");
+          setImportant(svg, "align-self", "center");
+        } else {
+          setImportant(parent, "align-items", "flex-start");
+          // Nudge icon down to the title midline when beside a title+body stack
+          setImportant(svg, "align-self", "flex-start");
+          setImportant(svg, "margin-top", "0.3em");
+        }
+      }
+      setImportant(svg, "flex-shrink", "0");
+      setImportant(svg, "vertical-align", "middle");
+    });
+
+    // Markdown / ChatGPT lists — compact like on-screen (avoid airy 26px lh + big margins)
+    qsa(cloneRoot, "ul, ol, [data-d-component='list']").forEach((el) => {
+      if (el.closest('[data-d-component="row"], [data-testid*="writing"]')) return;
+      setImportant(el, "margin-top", "0.35rem");
+      setImportant(el, "margin-bottom", "0.5rem");
+      const gap = el.style.gap || "";
+      if (gap && parseFloat(gap) > 8) {
+        setImportant(el, "gap", "0.15rem");
+        setImportant(el, "row-gap", "0.15rem");
+      }
+    });
+    qsa(cloneRoot, "li, [data-d-component='list-item']").forEach((el) => {
+      if (el.closest('[data-d-component="row"]')) return;
+      setImportant(el, "margin-top", "0.1rem");
+      setImportant(el, "margin-bottom", "0.1rem");
+      setImportant(el, "padding-top", "0");
+      setImportant(el, "padding-bottom", "0");
+      setImportant(el, "outline", "none");
+      setImportant(el, "box-shadow", "none");
+      const lh = (el.style.lineHeight || "").trim();
+      if (/px$/i.test(lh) && parseFloat(lh) >= 22) {
+        setImportant(el, "line-height", "1.4");
+      }
+      qsa(el, "p").forEach((p) => {
+        setImportant(p, "margin", "0");
+        const plh = (p.style.lineHeight || "").trim();
+        if (/px$/i.test(plh) && parseFloat(plh) >= 22) {
+          setImportant(p, "line-height", "1.4");
+        }
+      });
+      el.removeAttribute("data-state");
+      el.removeAttribute("aria-selected");
+      el.removeAttribute("tabindex");
+    });
+
+    // Radio / option rows used as “quick selectors”
+    qsa(cloneRoot, '[role="radio"], [role="option"], [role="menuitemradio"]').forEach((el) => {
+      setImportant(el, "outline", "none");
+      setImportant(el, "box-shadow", "none");
+      const parent = el.parentElement;
+      if (parent && /flex|grid/i.test(parent.style.display || "")) {
+        setImportant(parent, "gap", "0.4rem");
+        setImportant(parent, "row-gap", "0.4rem");
+      }
+    });
+
+    polishFormatSelector(cloneRoot);
+    polishFeatureCards(cloneRoot);
+    polishWritingBlocks(cloneRoot);
+    polishLayoutGrids(cloneRoot);
+  }
+
+  function makeOptionCheck() {
+    const s = document.createElement("span");
+    s.setAttribute("data-cgpt-dl-option-check", "1");
+    s.setAttribute("aria-hidden", "true");
+    s.innerHTML =
+      '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M6.2 10.2l2.4 2.4 5.2-5.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    setImportant(s, "display", "inline-flex");
+    setImportant(s, "flex-shrink", "0");
+    setImportant(s, "margin-left", "auto");
+    setImportant(s, "opacity", "0.9");
+    return s;
+  }
+
+  function isOptionSelected(el) {
+    if (!(el instanceof Element)) return false;
+    if (el.getAttribute("aria-pressed") === "true") return true;
+    if (el.getAttribute("aria-checked") === "true") return true;
+    const state = el.getAttribute("data-state") || "";
+    if (/^(checked|on|selected|active)$/i.test(state)) return true;
+    if (el.querySelector('[data-state="checked"], [aria-hidden="true"] svg')) {
+      const svgs = el.querySelectorAll("svg");
+      for (const svg of svgs) {
+        const r = svg.getBoundingClientRect();
+        if (r.width > 0 && r.width <= 28 && r.height <= 28) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Compact Dil “Quick format selector” / option cards after export chrome stripping */
+  function polishFormatSelector(cloneRoot) {
+    // Outer bordered card (the selector panel only)
+    qsa(cloneRoot, '[data-d-component="box"][data-d-has-border]').forEach((el) => {
+      if (
+        !el.querySelector(
+          '[role="radiogroup"], [data-d-component="radio-group"], [data-d-component="pressable"], [data-cgpt-dl-static][data-d-has-border]'
+        )
+      ) {
+        return;
+      }
+      const pl = parseFloat(el.style.paddingLeft) || 0;
+      const pr = parseFloat(el.style.paddingRight) || 0;
+      if (pl < 10) setImportant(el, "padding-left", "1rem");
+      if (pr < 10) setImportant(el, "padding-right", "1rem");
+      const pt = parseFloat(el.style.paddingTop) || 0;
+      const pb = parseFloat(el.style.paddingBottom) || 0;
+      if (pt < 8) setImportant(el, "padding-top", "1rem");
+      if (pb < 8) setImportant(el, "padding-bottom", "1rem");
+      setImportant(el, "box-sizing", "border-box");
+    });
+
+    // Example-format option rows
+    qsa(
+      cloneRoot,
+      '[data-d-component="pressable"][data-d-has-border], [data-cgpt-dl-static][data-d-has-border], [data-cgpt-dl-static][class*="Pressable"]'
+    ).forEach((el) => {
+      setImportant(el, "display", "flex");
+      setImportant(el, "flex-direction", "row");
+      setImportant(el, "align-items", "center");
+      setImportant(el, "justify-content", "space-between");
+      setImportant(el, "gap", "0.75rem");
+      setImportant(el, "width", "100%");
+      setImportant(el, "box-sizing", "border-box");
+      setImportant(el, "min-height", "0");
+      setImportant(el, "height", "auto");
+      setImportant(el, "padding", "0.65rem 0.85rem");
+      setImportant(el, "padding-left", "0.85rem");
+      setImportant(el, "padding-right", "0.85rem");
+      setImportant(el, "padding-top", "0.65rem");
+      setImportant(el, "padding-bottom", "0.65rem");
+      setImportant(el, "border-radius", el.style.borderRadius || "8px");
+      setImportant(el, "line-height", "1.35");
+      // Text inside should not inflate the row
+      qsa(el, "p, span, [data-d-component='text']").forEach((t) => {
+        setImportant(t, "margin", "0");
+        setImportant(t, "line-height", "1.35");
+      });
+    });
+
+    // Primary pill CTAs (“Show me an example”) — background often only in CSS vars
+    qsa(cloneRoot, '[data-cgpt-dl-static][data-pill], [data-cgpt-dl-static][data-variant="solid"]').forEach(
+      (el) => {
+        const bg = (el.style.backgroundColor || el.style.background || "").trim();
+        if (!bg || bg === "none" || bg === "transparent" || bg === "rgba(0, 0, 0, 0)") {
+          const isDark = isDarkTheme();
+          setImportant(el, "background", isDark ? "#fff" : "#0d0d0d");
+          setImportant(el, "background-color", isDark ? "#fff" : "#0d0d0d");
+          setImportant(el, "color", isDark ? "#0d0d0d" : "#fff");
+        }
+        setImportant(el, "padding", "0.7rem 1rem");
+        setImportant(el, "min-height", "2.5rem");
+        setImportant(el, "border-radius", "9999px");
+        setImportant(el, "display", "inline-flex");
+        setImportant(el, "align-items", "center");
+        setImportant(el, "justify-content", "center");
+        setImportant(el, "width", "100%");
+        setImportant(el, "box-sizing", "border-box");
+      }
+    );
+
+    qsa(cloneRoot, '[role="radiogroup"], [data-d-component="radio-group"]').forEach((g) => {
+      setImportant(g, "gap", "0.4rem");
+      setImportant(g, "row-gap", "0.4rem");
+    });
+    qsa(cloneRoot, '[data-d-component="radio"] label, [class*="RadioLabel"]').forEach((lab) => {
+      setImportant(lab, "align-items", "center");
+      setImportant(lab, "line-height", "1.35");
+      setImportant(lab, "gap", "0.55rem");
     });
   }
 
-  /** Same-origin CSS (fonts + markdown / widget rules) that survived CORS */
+  /**
+   * Kanban / card grids often freeze grid-template-rows to a measured px height
+   * (e.g. 94px). Extra items then spill out and overlap the next heading.
+   */
+  function polishLayoutGrids(cloneRoot) {
+    const grids = qsa(
+      cloneRoot,
+      '[data-d-component="grid"], [style*="display: grid"], [style*="display:grid"], [class*="Grid-"]'
+    );
+
+    grids.forEach((grid) => {
+      const rows = (grid.style.gridTemplateRows || "").trim();
+      const cols = (grid.style.gridTemplateColumns || "").trim();
+      const shorthand = (grid.style.grid || "").trim();
+
+      // Frozen px row track(s) → auto so cards grow with content
+      if (rows && /^[\d.]+px(\s+[\d.]+px)*$/.test(rows)) {
+        const n = rows.split(/\s+/).length;
+        setImportant(grid, "grid-template-rows", n > 1 ? `repeat(${n}, auto)` : "auto");
+      } else if (/\d+px\s*\//.test(shorthand)) {
+        setImportant(grid, "grid-template-rows", "auto");
+      }
+
+      // Measured px columns → equal flexible columns in the export
+      if (cols && /^[\d.]+px(\s+[\d.]+px)+$/.test(cols)) {
+        const n = cols.split(/\s+/).length;
+        setImportant(grid, "grid-template-columns", `repeat(${n}, minmax(0, 1fr))`);
+      }
+
+      setImportant(grid, "height", "auto");
+      setImportant(grid, "max-height", "none");
+      setImportant(grid, "align-items", "stretch");
+      setImportant(grid, "overflow", "visible");
+
+      // Card cells inside the grid
+      qsa(grid, '[data-d-component="grid-item"], [class*="Item-"], [class*="Box-"]').forEach((item) => {
+        if (item.style.display === "contents") {
+          // contents items don't box; fix their visible children instead
+          [...item.children].forEach((child) => {
+            setImportant(child, "height", "auto");
+            setImportant(child, "max-height", "none");
+            setImportant(child, "overflow", "visible");
+            const pad = parseFloat(child.style.paddingTop) || 0;
+            if (pad < 8) {
+              setImportant(child, "padding", "10px 12px");
+            }
+          });
+          return;
+        }
+        setImportant(item, "height", "auto");
+        setImportant(item, "max-height", "none");
+        setImportant(item, "overflow", "visible");
+        setImportant(item, "min-height", "0");
+      });
+    });
+  }
+
+  /**
+   * Email writing-blocks: Tailwind `invisible` measuring spans / aria-hidden
+   * layers stack on the subject textarea → ghosted double title without Tailwind.
+   */
+  function fixWritingBlockDuplicates(cloneRoot) {
+    // Global: utility classes that hide measuring clones — useless without Tailwind
+    qsa(
+      cloneRoot,
+      [
+        ".invisible",
+        '[class~="invisible"]',
+        ".sr-only",
+        '[class*="sr-only"]',
+        ".opacity-0",
+        '[class~="opacity-0"]',
+        "[data-placeholder]:empty",
+      ].join(", ")
+    ).forEach((el) => el.remove());
+
+    qsa(cloneRoot, '[aria-hidden="true"]').forEach((el) => {
+      if ((el.textContent || "").trim().length >= 2) el.remove();
+    });
+
+    const blocks = qsa(
+      cloneRoot,
+      [
+        '[data-testid="chatgpt-writing-block"]',
+        '[data-testid="writing-block-container"]',
+        "[data-oai-writing-block-surface]",
+        "[data-writing-block-variant]",
+        '[class*="WritingBlock"]',
+        '[class*="writing-block"]',
+      ].join(", ")
+    );
+
+    blocks.forEach((block) => {
+      // Subject auto-size: textarea + invisible span share one grid cell
+      qsa(block, "textarea").forEach((ta) => {
+        const val = (ta.value || ta.textContent || "").trim();
+        const div = document.createElement("div");
+        div.textContent = val;
+        div.setAttribute("data-cgpt-dl-subject", "1");
+        const st = ta.getAttribute("style") || "";
+        if (st) div.setAttribute("style", st);
+        setImportant(div, "outline", "none");
+        setImportant(div, "resize", "none");
+        setImportant(div, "overflow", "visible");
+        setImportant(div, "grid-area", "auto");
+        ta.replaceWith(div);
+      });
+
+      // Absolute/fixed title chromes that repeat visible text
+      const abs = qsa(block, "*").filter((el) => {
+        const pos = (el.style.position || "").toLowerCase();
+        return pos === "absolute" || pos === "fixed";
+      });
+      abs.forEach((el) => {
+        const t = (el.textContent || "").trim().replace(/\s+/g, " ");
+        if (t.length < 3 || t.length > 180) return;
+        const hasNormal = qsa(block, "h1,h2,h3,h4,p,div,span").some((other) => {
+          if (other === el || el.contains(other) || other.contains(el)) return false;
+          const pos = (other.style.position || "").toLowerCase();
+          if (pos === "absolute" || pos === "fixed") return false;
+          return (other.textContent || "").trim().replace(/\s+/g, " ") === t;
+        });
+        if (hasNormal) el.remove();
+      });
+
+      // Drop subject body duplicate when header already shows the same title
+      const headerText = (
+        qs(block, '[class*="whitespace-nowrap"], [class*="text-ellipsis"]')?.textContent || ""
+      )
+        .trim()
+        .replace(/\s+/g, " ");
+      if (headerText.length >= 3) {
+        qsa(block, "[data-cgpt-dl-subject]").forEach((el) => {
+          const t = (el.textContent || "").trim().replace(/\s+/g, " ");
+          if (t === headerText) el.remove();
+        });
+      }
+    });
+  }
+
+  /** Email / writing-block cards often lose horizontal padding after breakout cleanup */
+  function polishWritingBlocks(cloneRoot) {
+    const blocks = qsa(
+      cloneRoot,
+      [
+        '[data-testid="chatgpt-writing-block"]',
+        '[data-testid="writing-block-container"]',
+        "[data-oai-writing-block-surface]",
+        "[data-writing-block-variant]",
+        '[class*="WritingBlock"]',
+      ].join(", ")
+    );
+
+    blocks.forEach((block) => {
+      setImportant(block, "padding-left", "1rem");
+      setImportant(block, "padding-right", "1rem");
+      setImportant(block, "box-sizing", "border-box");
+
+      // Inner surfaces / editors that were forced to padding-left:0
+      qsa(
+        block,
+        '[class*="writing-block"], [class*="ProseMirror"], [class*="editor"], [data-oai-writing-block-surface]'
+      ).forEach((inner) => {
+        const pl = parseFloat(inner.style.paddingLeft) || 0;
+        const pr = parseFloat(inner.style.paddingRight) || 0;
+        if (pl < 8) setImportant(inner, "padding-left", "1rem");
+        if (pr < 8) setImportant(inner, "padding-right", "1rem");
+      });
+
+      // Header / body chrome rows flush to edge
+      qsa(block, "[style*='padding-left: 0'], [style*='padding-left:0']").forEach((el) => {
+        if (el.closest("button, svg")) return;
+        if (el === block) return;
+        const pl = parseFloat(el.style.paddingLeft) || 0;
+        if (pl === 0 && /flex|block|grid/i.test(el.style.display || "block")) {
+          // only pad direct content wrappers, not every nested node
+          if (el.parentElement === block || el.parentElement?.parentElement === block) {
+            setImportant(el, "padding-left", "1rem");
+            setImportant(el, "padding-right", "1rem");
+          }
+        }
+      });
+    });
+  }
+
+  /** Strip focus rings / selection outlines left in computed styles */
+  function stripFocusChrome(cloneRoot) {
+    qsa(cloneRoot, "[style]").forEach((el) => {
+      const outline = (el.style.outline || "").toLowerCase();
+      if (outline && outline !== "none" && outline !== "0px") {
+        setImportant(el, "outline", "none");
+        setImportant(el, "outline-offset", "0");
+      }
+      // Tailwind-style focus rings often bake into box-shadow
+      const shadow = el.style.boxShadow || "";
+      if (
+        /0\s*0\s*0\s*(1|2|3)px|rgba?\(\s*255\s*,\s*255\s*,\s*255/i.test(shadow) &&
+        (el.tagName === "TR" ||
+          el.tagName === "TD" ||
+          el.tagName === "TH" ||
+          el.tagName === "LI" ||
+          el.getAttribute("role") === "radio" ||
+          el.getAttribute("role") === "option" ||
+          el.getAttribute("role") === "row")
+      ) {
+        setImportant(el, "box-shadow", "none");
+      }
+    });
+  }
+
+  /** Same-origin CSS (markdown / widget rules). Skip huge inlined font blobs. */
   function collectAuthorCssText() {
     const chunks = [];
     const interesting =
@@ -842,11 +1783,16 @@
         for (const rule of rules) {
           const text = rule.cssText || "";
           if (!text) continue;
-          if (rule.type === CSSRule.FONT_FACE_RULE || rule.type === CSSRule.KEYFRAMES_RULE) {
+          if (rule.type === CSSRule.FONT_FACE_RULE) {
+            // data: font payloads bloat the file; system fonts are fine offline
+            if (/url\(\s*['"]?data:/i.test(text)) continue;
+            if (text.length > 4000) continue;
             chunks.push(text);
             continue;
           }
+          if (rule.type === CSSRule.KEYFRAMES_RULE) continue;
           if (rule.type === CSSRule.STYLE_RULE && interesting.test(rule.selectorText || "")) {
+            if (text.length > 8000) continue;
             chunks.push(text);
           }
         }
@@ -855,7 +1801,7 @@
       /* ignore */
     }
     const joined = chunks.join("\n");
-    return joined.length > 180000 ? joined.slice(0, 180000) : joined;
+    return joined.length > 120000 ? joined.slice(0, 120000) : joined;
   }
 
   async function blobToDataUrl(blob) {
@@ -867,26 +1813,197 @@
     });
   }
 
+  async function fetchDataUrlViaExtension(absUrl) {
+    if (!absUrl || !chrome?.runtime?.sendMessage) return null;
+    try {
+      const resp = await chrome.runtime.sendMessage({
+        type: "cgpt-dl-fetch-data-url",
+        url: absUrl,
+      });
+      if (resp?.ok && typeof resp.dataUrl === "string" && resp.dataUrl.startsWith("data:")) {
+        return resp.dataUrl;
+      }
+    } catch {
+      /* extension context invalidated / no receiver */
+    }
+    return null;
+  }
+
+  /** Always prefer base64 data URLs; returns null if inlining failed (never leaves bare https). */
+  async function urlToDataUrl(url) {
+    if (!url || url === "none") return null;
+    const cleaned = url.replace(/^url\(["']?|["']?\)$/g, "").trim();
+    if (!cleaned || cleaned === "none") return null;
+    if (cleaned.startsWith("data:")) return cleaned;
+
+    let abs;
+    try {
+      abs = new URL(cleaned, location.href).href;
+    } catch {
+      return null;
+    }
+
+    // Extension background fetch bypasses page CORS (images.openai.com, oaiusercontent, …)
+    const viaBg = await fetchDataUrlViaExtension(abs);
+    if (viaBg) return viaBg;
+
+    try {
+      const res = await fetch(abs, { credentials: "include", mode: "cors" });
+      if (res.ok) {
+        const dataUrl = await blobToDataUrl(await res.blob());
+        if (typeof dataUrl === "string" && dataUrl.startsWith("data:")) return dataUrl;
+      }
+    } catch {
+      /* page CORS */
+    }
+    return null;
+  }
+
+  async function canvasFromImage(img) {
+    if (!(img instanceof HTMLImageElement)) return null;
+    const w = img.naturalWidth || Math.round(img.getBoundingClientRect().width * (devicePixelRatio || 1));
+    const h = img.naturalHeight || Math.round(img.getBoundingClientRect().height * (devicePixelRatio || 1));
+    if (w < 1 || h < 1) return null;
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      return canvas.toDataURL("image/png");
+    } catch {
+      return null;
+    }
+  }
+
+  async function imgToDataUrl(img) {
+    if (!(img instanceof HTMLImageElement)) return null;
+    const src = img.currentSrc || img.getAttribute("src") || "";
+    if (!src) {
+      const srcset = img.getAttribute("srcset") || "";
+      const first = srcset.split(",")[0]?.trim().split(/\s+/)[0];
+      if (first) return urlToDataUrl(first);
+      return null;
+    }
+    if (src.startsWith("data:")) return src;
+
+    const fetched = await urlToDataUrl(src);
+    if (fetched) return fetched;
+
+    // Last resort: rasterize the already-decoded bitmap (fails if canvas is CORS-tainted)
+    return canvasFromImage(img);
+  }
+
+  function findBgImageUrl(el) {
+    if (!(el instanceof Element)) return null;
+    const nodes = [el, ...qsa(el, "*")];
+    for (const node of nodes) {
+      try {
+        const bg = getComputedStyle(node).backgroundImage || "";
+        const m = bg.match(/url\((["']?)([^"')]+)\1\)/);
+        if (m?.[2] && !m[2].startsWith("data:image/svg")) return m[2];
+      } catch {
+        /* ignore */
+      }
+      const inline = node.style?.backgroundImage || "";
+      const m2 = inline.match(/url\((["']?)([^"')]+)\1\)/);
+      if (m2?.[2]) return m2[2];
+    }
+    return null;
+  }
+
+  function injectImgIntoTile(tile, dataUrl, alt) {
+    if (!tile || !dataUrl) return;
+    let img = [...tile.querySelectorAll("img")].find((el) => el.parentElement === tile);
+    if (!img) {
+      img = document.createElement("img");
+      tile.insertBefore(img, tile.firstChild);
+    }
+    img.setAttribute("src", dataUrl);
+    img.removeAttribute("srcset");
+    img.alt = alt || img.alt || "Image";
+    setImportant(img, "display", "block");
+    setImportant(img, "width", "100%");
+    setImportant(img, "height", "100%");
+    setImportant(img, "object-fit", "cover");
+    setImportant(img, "position", "absolute");
+    setImportant(img, "inset", "0");
+    setImportant(img, "border-radius", "inherit");
+    setImportant(img, "z-index", "0");
+    if (!/relative|absolute|fixed/i.test(tile.style.position || "")) {
+      setImportant(tile, "position", "relative");
+    }
+  }
+
+  /**
+   * Inline live <img> pixels onto the clone (data URLs) while paths still match.
+   * ChatGPT image search wraps previews in <button> — freeze/strip may drop them,
+   * so refillEmptyImageTiles runs again after strip.
+   */
+  async function embedContentImages(sourceRoot, cloneRoot) {
+    const srcImgs = qsa(sourceRoot, "img").filter((img) => {
+      const src = img.currentSrc || img.getAttribute("src") || img.getAttribute("srcset");
+      if (!src) return false;
+      const r = img.getBoundingClientRect();
+      return r.width >= 32 || r.height >= 32 || img.naturalWidth >= 32;
+    });
+
+    for (const srcImg of srcImgs) {
+      const dataUrl = await imgToDataUrl(srcImg);
+      if (!dataUrl) continue;
+      const path = childIndexPath(sourceRoot, srcImg);
+      const dst = path ? nodeFromPath(cloneRoot, path) : null;
+      if (dst instanceof HTMLImageElement) {
+        dst.setAttribute("src", dataUrl);
+        dst.removeAttribute("srcset");
+      }
+    }
+  }
+
+  /** Restore search/generated preview tiles emptied when their <button> wrappers were removed */
+  async function refillEmptyImageTiles(sourceRoot, cloneRoot) {
+    const tileSel =
+      '[class*="generated-image-preview"], [class*="image-preview"], [class*="ImageTile"]';
+    const srcTiles = qsa(sourceRoot, tileSel);
+    const dstTiles = qsa(cloneRoot, tileSel);
+    const n = Math.min(srcTiles.length, dstTiles.length);
+    for (let i = 0; i < n; i++) {
+      const dst = dstTiles[i];
+      if (dst.querySelector('img[src^="data:"], img[src]:not([src=""])')) continue;
+
+      const liveImg = srcTiles[i].querySelector("img");
+      if (liveImg) {
+        const dataUrl = await imgToDataUrl(liveImg);
+        if (dataUrl) injectImgIntoTile(dst, dataUrl, liveImg.alt || "");
+        continue;
+      }
+
+      const bg = findBgImageUrl(srcTiles[i]);
+      if (bg) {
+        const dataUrl = await urlToDataUrl(bg);
+        if (dataUrl) injectImgIntoTile(dst, dataUrl, "");
+      }
+    }
+  }
+
   async function inlineImages(cloneRoot) {
     await Promise.all(
-      qsa(cloneRoot, "img[src]").map(async (img) => {
-        const src = img.getAttribute("src");
-        if (!src || src.startsWith("data:")) return;
-        try {
-          const abs = new URL(src, location.href).href;
-          const res = await fetch(abs, { credentials: "include" });
-          if (!res.ok) {
-            img.setAttribute("src", abs);
-            return;
-          }
-          img.setAttribute("src", await blobToDataUrl(await res.blob()));
-        } catch {
-          try {
-            img.setAttribute("src", new URL(src, location.href).href);
-          } catch {
-            /* keep */
-          }
+      qsa(cloneRoot, "img").map(async (img) => {
+        const src = img.getAttribute("src") || "";
+        if (src.startsWith("data:")) return;
+
+        let candidate = src;
+        if (!candidate) {
+          const srcset = img.getAttribute("srcset") || "";
+          candidate = srcset.split(",")[0]?.trim().split(/\s+/)[0] || "";
         }
+        if (!candidate) return;
+
+        const dataUrl = await urlToDataUrl(candidate);
+        if (dataUrl?.startsWith("data:")) {
+          img.setAttribute("src", dataUrl);
+          img.removeAttribute("srcset");
+        }
+        // Leave remote URL only if base64 inlining failed (offline may still break)
       })
     );
   }
@@ -1093,7 +2210,8 @@
       try {
         const img = document.createElement("img");
         img.alt = "Rendered diagram";
-        img.style.cssText = "max-width:100%;height:auto;display:block;margin:0.75rem 0;";
+        img.style.cssText =
+          "max-width:100%;height:auto;display:block;margin:0.75rem auto;";
 
         if (kind === "canvas") {
           img.src = el.toDataURL("image/png");
@@ -1109,7 +2227,8 @@
           if (xml.length < 450000) {
             const wrap = document.createElement("div");
             wrap.className = "cgpt-dl-diagram";
-            wrap.style.cssText = "max-width:100%;overflow:auto;margin:0.75rem 0;";
+            wrap.style.cssText =
+              "max-width:100%;overflow:auto;margin:0.75rem auto;display:flex;justify-content:center;";
             wrap.innerHTML = xml;
             target.replaceWith(wrap);
           } else {
@@ -1203,13 +2322,16 @@
         const { svg } = await mermaid.render(id, text);
         const holder = document.createElement("div");
         holder.className = "cgpt-dl-diagram";
-        holder.style.cssText = "max-width:100%;overflow:auto;margin:0.75rem 0;";
+        holder.style.cssText =
+          "max-width:100%;overflow:auto;margin:0.75rem auto;display:flex;justify-content:center;";
         holder.innerHTML = svg;
         const svgEl = holder.querySelector("svg");
         if (svgEl) {
           svgEl.style.maxWidth = "100%";
           svgEl.style.height = "auto";
           svgEl.style.display = "block";
+          svgEl.style.marginLeft = "auto";
+          svgEl.style.marginRight = "auto";
         }
         cloneWrap.insertAdjacentElement("afterend", holder);
       } catch (err) {
@@ -1310,14 +2432,233 @@
     });
   }
 
+  /** Copy / share / turn chrome — not in-reply widgets or image tiles */
+  function isExportChromeControl(el) {
+    if (!(el instanceof HTMLElement)) return false;
+    if (el.classList.contains(BTN_CLASS) || el.closest(`.${BTN_CLASS}`)) return true;
+    const label = (el.getAttribute("aria-label") || el.getAttribute("title") || "").trim();
+    const testId = el.getAttribute("data-testid") || "";
+    if (
+      /^(copy|share|download|good response|bad response|read aloud|regenerate|more actions|more)$/i.test(
+        label
+      ) ||
+      /copy (code|table|message|response)|word wrap|expand table|open email|open in email/i.test(label)
+    ) {
+      return true;
+    }
+    if (/copy/i.test(testId) || /share/i.test(testId)) return true;
+    if (
+      el.matches(
+        '[data-testid="copy-code-button"], [data-testid*="copy"], [aria-label="Copy code"], [aria-label="Copy table"], [aria-label="Enable word wrap"], [aria-label="Open email in app"], [aria-label="Open in email"], [aria-label="Expand table"]'
+      )
+    ) {
+      return true;
+    }
+    if (el.closest("[data-markdown-copy='exclude'], [class*='StickyActionBar'], .turn-action-controls")) {
+      if (el.tagName === "BUTTON" || el.getAttribute("role") === "button") return true;
+    }
+    return false;
+  }
+
+  function buttonToStaticDiv(btn) {
+    const div = document.createElement("div");
+    for (const { name, value } of [...btn.attributes]) {
+      if (name === "type" || name === "disabled" || name === "tabindex") continue;
+      try {
+        div.setAttribute(name, value);
+      } catch {
+        /* ignore */
+      }
+    }
+    div.innerHTML = btn.innerHTML;
+    div.setAttribute("data-cgpt-dl-static", "1");
+    div.removeAttribute("tabindex");
+
+    // Absolute decorative icons on CTAs must not sit on the label
+    qsa(div, "*").forEach((el) => {
+      const pos = (el.style.position || "").toLowerCase();
+      if (pos !== "absolute" && pos !== "fixed") return;
+      const looksIcon =
+        el.tagName === "SVG" ||
+        !!el.querySelector("svg") ||
+        /icon|chevron|arrow|caret/i.test(String(el.className || ""));
+      if (!looksIcon) return;
+      setImportant(el, "position", "static");
+      setImportant(el, "inset", "auto");
+      setImportant(el, "top", "auto");
+      setImportant(el, "right", "auto");
+      setImportant(el, "bottom", "auto");
+      setImportant(el, "left", "auto");
+      setImportant(el, "transform", "none");
+      setImportant(el, "margin-left", "0.5rem");
+      setImportant(el, "flex-shrink", "0");
+    });
+
+    const text = (div.textContent || "").replace(/\s+/g, " ").trim();
+    const isPill =
+      div.hasAttribute("data-pill") ||
+      div.getAttribute("data-variant") === "solid" ||
+      /show me|example|continue|try it|generate|submit/i.test(text);
+    if (isPill) {
+      setImportant(div, "display", "inline-flex");
+      setImportant(div, "align-items", "center");
+      setImportant(div, "justify-content", "center");
+      setImportant(div, "gap", "0.5rem");
+      setImportant(div, "width", "100%");
+      setImportant(div, "box-sizing", "border-box");
+      const bg = (div.style.backgroundColor || div.style.background || "").trim();
+      if (!bg || bg === "none" || bg === "transparent" || bg === "rgba(0, 0, 0, 0)") {
+        const dark = isDarkTheme();
+        setImportant(div, "background", dark ? "#ffffff" : "#0d0d0d");
+        setImportant(div, "background-color", dark ? "#ffffff" : "#0d0d0d");
+        setImportant(div, "color", dark ? "#0d0d0d" : "#ffffff");
+      }
+      setImportant(div, "border-radius", "9999px");
+      setImportant(div, "padding", "0.7rem 1rem");
+    }
+
+    btn.replaceWith(div);
+    return div;
+  }
+
+  function isLiveRadioChecked(el) {
+    if (!(el instanceof Element)) return false;
+    if (el.getAttribute("aria-checked") === "true") return true;
+    if (el.getAttribute("data-state") === "checked") return true;
+    if (el.querySelector('input[type="radio"]:checked, [aria-checked="true"], [data-state="checked"]')) {
+      return true;
+    }
+    const btn = el.querySelector('button[role="radio"], [role="radio"], [class*="RadioIndicator"] button');
+    if (btn && btn !== el) {
+      if (btn.getAttribute("aria-checked") === "true") return true;
+      if (btn.getAttribute("data-state") === "checked") return true;
+    }
+    const label = el.querySelector("label[for]");
+    const forId = label?.getAttribute("for");
+    if (forId) {
+      let input = null;
+      try {
+        input = el.querySelector(`#${CSS.escape(forId)}`) || document.getElementById(forId);
+      } catch {
+        input = document.getElementById(forId);
+      }
+      if (input && "checked" in input && input.checked) return true;
+    }
+    const wrap = el.querySelector('[class*="RadioIndicator"]');
+    if (wrap?.querySelector('[data-state="checked"]')) return true;
+    if (wrap && wrap.querySelectorAll("circle").length >= 2) return true;
+    return false;
+  }
+
+  function makeRadioDot(checked) {
+    const s = document.createElement("span");
+    s.setAttribute("data-cgpt-dl-radio-dot", checked ? "1" : "0");
+    s.setAttribute("aria-hidden", "true");
+    setImportant(s, "display", "block");
+    setImportant(s, "width", "16px");
+    setImportant(s, "height", "16px");
+    setImportant(s, "border-radius", "9999px");
+    setImportant(s, "box-sizing", "border-box");
+    setImportant(s, "border", "1.5px solid color-mix(in srgb, currentColor 55%, transparent)");
+    setImportant(s, "background", "transparent");
+    setImportant(s, "flex-shrink", "0");
+    if (checked) {
+      setImportant(s, "border-color", "currentColor");
+      setImportant(
+        s,
+        "background",
+        "radial-gradient(circle at center, currentColor 0 4.25px, transparent 4.75px)"
+      );
+    }
+    return s;
+  }
+
+  function paintRadioIndicators(sourceRoot, cloneRoot) {
+    const srcItems = qsa(sourceRoot, '[data-d-component="radio"], [role="radio"]');
+    const dstItems = qsa(cloneRoot, '[data-d-component="radio"], [role="radio"]');
+    const n = Math.min(srcItems.length, dstItems.length);
+    for (let i = 0; i < n; i++) {
+      const checked = isLiveRadioChecked(srcItems[i]);
+      const wrap =
+        qs(dstItems[i], '[class*="RadioIndicator"]') ||
+        qs(dstItems[i], '[class*="radio-indicator"]');
+      if (!wrap) continue;
+      qsa(wrap, "button, input, [role='radio']").forEach((el) => el.remove());
+      qsa(wrap, "[data-cgpt-dl-radio-dot]").forEach((el) => el.remove());
+      wrap.appendChild(makeRadioDot(checked));
+      setImportant(wrap, "display", "flex");
+      setImportant(wrap, "align-items", "center");
+      setImportant(wrap, "justify-content", "center");
+      setImportant(wrap, "width", "18px");
+      setImportant(wrap, "height", "18px");
+      setImportant(wrap, "flex", "0 0 18px");
+      setImportant(wrap, "min-width", "18px");
+    }
+  }
+
+  /**
+   * Keep in-reply buttons (format selector, image tiles) as static markup.
+   * Only turn chrome is removed.
+   */
+  function paintOptionChecks(sourceRoot, cloneRoot) {
+    const sel =
+      '[data-d-component="pressable"][data-d-has-border], [class*="Pressable"][data-d-has-border], button[data-d-has-border]';
+    const srcOpts = qsa(sourceRoot, sel);
+    const dstOpts = qsa(
+      cloneRoot,
+      '[data-cgpt-dl-static][data-d-has-border], [data-d-component="pressable"][data-d-has-border], [data-cgpt-dl-static][class*="Pressable"]'
+    );
+    const n = Math.min(srcOpts.length, dstOpts.length);
+    for (let i = 0; i < n; i++) {
+      if (!isOptionSelected(srcOpts[i])) continue;
+      const dst = dstOpts[i];
+      if (dst.querySelector("[data-cgpt-dl-option-check], svg")) continue;
+      dst.appendChild(makeOptionCheck());
+    }
+  }
+
+  function freezeInteractiveWidgets(sourceRoot, cloneRoot) {
+    paintRadioIndicators(sourceRoot, cloneRoot);
+
+    qsa(cloneRoot, 'button, [role="button"]').forEach((btn) => {
+      if (isExportChromeControl(btn)) {
+        // Never drop a button that carries the only preview image
+        const img = btn.querySelector("img");
+        if (img && (img.getAttribute("src") || img.getAttribute("srcset"))) {
+          buttonToStaticDiv(btn);
+          return;
+        }
+        btn.remove();
+        return;
+      }
+      if (btn.closest('[class*="RadioIndicator"], [class*="radio-indicator"]')) {
+        btn.remove();
+        return;
+      }
+      buttonToStaticDiv(btn);
+    });
+
+    paintOptionChecks(sourceRoot, cloneRoot);
+
+    qsa(cloneRoot, 'input[type="radio"], input[type="checkbox"]').forEach((inp) => {
+      if (inp.closest('[data-d-component="radio"], [role="radiogroup"], [class*="Radio"]')) {
+        inp.remove();
+        return;
+      }
+      setImportant(inp, "display", "none");
+    });
+  }
+
   function stripInteractiveNoise(cloneRoot) {
     // Preserve JSON/YAML/Plain text headers before removing action chrome
     preserveCodeBlockLangLabels(cloneRoot);
 
+    // Real <button>s should already be frozen; drop leftovers + dialogs
+    qsa(cloneRoot, "button, dialog").forEach((el) => el.remove());
+
     qsa(
       cloneRoot,
       [
-        "button",
         `.${BTN_CLASS}`,
         '[data-testid="copy-code-button"]',
         '[data-testid*="copy"]',
@@ -1327,9 +2668,18 @@
         '[aria-label="Open email in app"]',
         '[aria-label="Open in email"]',
         '[aria-label="Expand table"]',
-        "dialog",
       ].join(", ")
-    ).forEach((el) => el.remove());
+    ).forEach((el) => {
+      if (el.getAttribute("data-cgpt-dl-static") === "1") return;
+      // Keep tile images even if nested under a matched chrome selector
+      if (el.closest('[class*="generated-image-preview"]') && el.querySelector?.("img")) return;
+      el.remove();
+    });
+
+    qsa(cloneRoot, '[role="button"]').forEach((el) => {
+      if (el.getAttribute("data-cgpt-dl-static") === "1") return;
+      if (isExportChromeControl(el)) el.remove();
+    });
 
     // Any leftover sticky bars without a title
     qsa(cloneRoot, "[data-markdown-copy='exclude'], [class*='StickyActionBar']").forEach((el) =>
@@ -1345,7 +2695,7 @@
   /** Extra layout CSS so tables / writing-blocks / grids survive without ChatGPT runtime */
   function exportWidgetCss() {
     return `
-/* Tables — fluid, no nested scrollports */
+/* Tables — full width, columns share space */
 .cgpt-export table,
 .cgpt-export [data-markdown-table] table {
   display: table !important;
@@ -1353,10 +2703,86 @@
   width: 100% !important;
   max-width: 100% !important;
   height: auto !important;
-  table-layout: auto;
+  table-layout: auto !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  text-align: left !important;
 }
 .cgpt-export th, .cgpt-export td {
-  vertical-align: top;
+  vertical-align: middle;
+  text-align: left !important;
+  word-break: break-word;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  border-top: none !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+  padding-top: 8px !important;
+  padding-bottom: 8px !important;
+  line-height: 1.45 !important;
+  height: auto !important;
+  min-height: 0 !important;
+}
+.cgpt-export th p,
+.cgpt-export td p,
+.cgpt-export th > div,
+.cgpt-export td > div {
+  margin: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  line-height: 1.45 !important;
+}
+.cgpt-export tr {
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+}
+.cgpt-export tr > :first-child {
+  width: max-content;
+  white-space: nowrap;
+  padding-left: 0 !important;
+  padding-right: 14px !important;
+}
+.cgpt-export tr > :not(:first-child) {
+  padding-left: 14px !important;
+}
+.cgpt-export tr > :last-child {
+  padding-right: 0 !important;
+}
+
+/* Icon + title feature cards — match ChatGPT density */
+.cgpt-export [data-d-component="divider"],
+.cgpt-export [class*="Divider"] {
+  padding-top: 10px !important;
+  padding-bottom: 10px !important;
+  line-height: 0 !important;
+  font-size: 0 !important;
+  min-height: 0 !important;
+}
+.cgpt-export [data-d-component="row"]:has(svg):has(p) {
+  gap: 12px !important;
+  align-items: flex-start !important;
+}
+.cgpt-export [data-d-component="row"]:has(svg):has(p) [data-d-direction="col"],
+.cgpt-export [data-d-component="row"]:has(svg):has(p) > div:not(:has(> svg:only-child)) {
+  gap: 4px !important;
+  row-gap: 4px !important;
+}
+.cgpt-export [data-d-component="row"]:has(svg):has(p) p {
+  margin: 0 !important;
+}
+.cgpt-export thead th,
+.cgpt-export th {
+  text-align: left !important;
+  font-weight: 600;
 }
 .cgpt-export [data-markdown-table],
 .cgpt-export [class*="TableContainer"],
@@ -1366,11 +2792,17 @@
   display: block !important;
   width: 100% !important;
   max-width: 100% !important;
+  min-width: 0 !important;
   height: auto !important;
   max-height: none !important;
   overflow-x: auto !important;
   overflow-y: visible !important;
   contain: none !important;
+  /* ChatGPT breakout: padding-left 405px + negative margin — kills export width */
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
 }
 .cgpt-export [data-code-block],
 .cgpt-export pre,
@@ -1381,6 +2813,20 @@
   min-width: 0 !important;
   box-sizing: border-box !important;
   overflow-x: auto !important;
+  padding-left: 1.25rem !important;
+  padding-right: 1.25rem !important;
+  line-height: 1.25 !important;
+}
+.cgpt-export pre code,
+.cgpt-export [data-code-block] code,
+.cgpt-export [class*="code-block"] code {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  line-height: inherit !important;
+}
+.cgpt-export :not(pre) > code {
+  padding-left: 0.4em !important;
+  padding-right: 0.4em !important;
 }
 .cgpt-export .cgpt-dl-code-lang {
   display: flex;
@@ -1392,29 +2838,162 @@
   font-weight: 500;
   opacity: 0.9;
   border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  line-height: 1.3 !important;
 }
 
 /* Email / writing blocks */
 .cgpt-export [data-testid="chatgpt-writing-block"],
+.cgpt-export [data-testid="writing-block-container"],
 .cgpt-export [data-oai-writing-block-surface],
 .cgpt-export [data-writing-block-variant] {
   display: block;
   position: relative;
   max-width: 100%;
   box-sizing: border-box;
+  padding-left: 1rem !important;
+  padding-right: 1rem !important;
 }
 .cgpt-export [class*="ProseMirror"],
 .cgpt-export [class*="writing-block-editor"] {
-  outline: none;
+  outline: none !important;
   min-height: 1.5em;
   white-space: pre-wrap;
+  padding-left: 0.25rem !important;
+  padding-right: 0.25rem !important;
+}
+/* Tailwind hide utilities — without Tailwind they show as double text */
+.cgpt-export .invisible,
+.cgpt-export .sr-only,
+.cgpt-export .opacity-0 {
+  display: none !important;
+}
+
+/* Quick format selector / Dil option rows */
+.cgpt-export [data-d-component="pressable"][data-d-has-border],
+.cgpt-export [data-cgpt-dl-static][data-d-has-border] {
+  padding: 0.65rem 0.85rem !important;
+  min-height: 0 !important;
+  height: auto !important;
+  align-items: center !important;
+  box-sizing: border-box !important;
+}
+.cgpt-export [data-cgpt-dl-static][data-pill],
+.cgpt-export [data-cgpt-dl-static][data-variant="solid"] {
+  border-radius: 9999px !important;
+}
+
+/* Image search / generated preview tiles */
+.cgpt-export [class*="generated-image-preview"],
+.cgpt-export [class*="image-preview"] {
+  position: relative !important;
+  overflow: hidden !important;
+}
+.cgpt-export [class*="generated-image-preview"] > img,
+.cgpt-export [class*="image-preview"] > img {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  object-fit: cover !important;
+  border-radius: inherit;
+}
+
+/* Diagrams centered */
+.cgpt-export .cgpt-dl-diagram {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: auto;
+  margin: 0.75rem auto !important;
+}
+.cgpt-export .cgpt-dl-diagram svg,
+.cgpt-export img[alt="Rendered diagram"] {
+  display: block !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  max-width: 100%;
+  height: auto;
+}
+
+/* Display math centered (inline katex untouched) */
+.cgpt-export .katex-display,
+.cgpt-export .math-display,
+.cgpt-export [class*="katex-display"],
+.cgpt-export mjx-container[display="true"] {
+  display: block !important;
+  text-align: center !important;
+  margin: 0.75rem auto !important;
+  width: 100% !important;
+}
+.cgpt-export .katex-display > .katex,
+.cgpt-export .katex-display > .katex-html {
+  text-align: center;
+}
+
+/* Icon + label vertical centering */
+.cgpt-export svg {
+  vertical-align: middle;
+}
+.cgpt-export :is(div,li,a,span,h1,h2,h3,h4,button,[role="button"]):has(> svg:first-child) {
+  align-items: center;
+}
+.cgpt-export [style*="display: flex"]:has(> svg),
+.cgpt-export [style*="display:flex"]:has(> svg),
+.cgpt-export [style*="display: inline-flex"]:has(> svg) {
+  align-items: center !important;
+}
+
+/* Lists — compact like ChatGPT */
+.cgpt-export ul, .cgpt-export ol,
+.cgpt-export [data-d-component="list"] {
+  margin: 0.35rem 0 0.6rem;
+  padding-left: 1.35em;
+}
+.cgpt-export li,
+.cgpt-export [data-d-component="list-item"] {
+  margin: 0.1rem 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  line-height: 1.4 !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+.cgpt-export li + li,
+.cgpt-export [data-d-component="list-item"] + [data-d-component="list-item"] {
+  margin-top: 0.1rem !important;
+}
+.cgpt-export li p,
+.cgpt-export [data-d-component="list-item"] p {
+  margin: 0 !important;
+  line-height: 1.4 !important;
+}
+
+/* Kill leftover focus/selection rings */
+.cgpt-export *:focus,
+.cgpt-export *:focus-visible {
+  outline: none !important;
 }
 
 /* Grid cards (kanban / decision layouts) */
 .cgpt-export [class*="Grid"],
 .cgpt-export [data-d-component="grid"] {
-  display: grid;
+  display: grid !important;
   max-width: 100%;
+  height: auto !important;
+  max-height: none !important;
+  align-items: stretch !important;
+  overflow: visible !important;
+  grid-template-rows: auto !important;
+}
+.cgpt-export [data-d-component="grid"] > *,
+.cgpt-export [class*="Grid-"] > * {
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+  min-height: 0 !important;
 }
 `;
   }
@@ -1540,7 +3119,13 @@ ${extraCss}
       await embedRenderedVisuals(content, clone);
       await renderMermaidSourcesIntoClone(content, clone);
 
+      downloadBtn.setAttribute("aria-label", "Capturing images…");
+      await embedContentImages(content, clone);
+      freezeInteractiveWidgets(content, clone);
       stripInteractiveNoise(clone);
+      await refillEmptyImageTiles(content, clone);
+      fixWritingBlockDuplicates(clone);
+      stripFocusChrome(clone);
       normalizeExportLayout(clone);
       annotateUnrenderedDiagrams(clone);
       absolutizeUrls(clone);
@@ -1549,16 +3134,17 @@ ${extraCss}
       const previewText = (content.innerText || "chatgpt-response").trim();
       const title = slugify(previewText.split("\n").find(Boolean) || "chatgpt-response");
       const filename = `${title}-${timestamp()}.html`;
+      const authorCss = collectAuthorCssText();
 
       downloadText(
         filename,
         buildHtmlDocument({
           bodyHtml: clone.outerHTML,
-          cssVars: cssVarsBlock(collectCssVariables(content)),
+          cssVars: cssVarsBlock(collectUsedCssVariables(content, clone, authorCss)),
           dark: isDarkTheme(),
           title,
           chrome: pageChrome(content),
-          authorCss: collectAuthorCssText(),
+          authorCss,
         })
       );
 

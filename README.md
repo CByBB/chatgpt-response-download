@@ -8,9 +8,9 @@ Browser extension that adds a **Download** button on each ChatGPT reply. One cli
 2. Turn on **Developer mode**.
 3. Click **Load unpacked**.
 4. Select this folder (`Chatgpt.com`) — the one that contains `manifest.json`.
-5. Confirm the card shows **version 1.6.4** and no red error.
+5. Confirm the card shows **version 1.6.18** and no red error.
 6. Open [chatgpt.com](https://chatgpt.com), hard-refresh (`Ctrl+Shift+R`).
-7. Console check (`F12`): `[cgpt-dl] ready v1.6.4`
+7. Console check (`F12`): `[cgpt-dl] ready v1.6.18`
 
 After any code update: **Reload** the extension, then hard-refresh ChatGPT.
 

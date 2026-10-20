@@ -2,6 +2,41 @@ chrome.runtime.onInstalled.addListener(() => {
   console.log("[cgpt-dl] extension installed/updated");
 });
 
+/** Fetch image (etc.) in the extension context — bypasses page CORS for data-URL inlining */
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type !== "cgpt-dl-fetch-data-url" || !msg.url) return;
+
+  (async () => {
+    try {
+      const res = await fetch(msg.url, {
+        credentials: "omit",
+        cache: "force-cache",
+        redirect: "follow",
+      });
+      if (!res.ok) {
+        sendResponse({ ok: false, error: `HTTP ${res.status}` });
+        return;
+      }
+      const blob = await res.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error || new Error("readAsDataURL failed"));
+        reader.readAsDataURL(blob);
+      });
+      if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) {
+        sendResponse({ ok: false, error: "invalid data url" });
+        return;
+      }
+      sendResponse({ ok: true, dataUrl });
+    } catch (err) {
+      sendResponse({ ok: false, error: String(err?.message || err) });
+    }
+  })();
+
+  return true; // async sendResponse
+});
+
 async function injectIntoTab(tabId, url) {
   if (!url || !/^https:\/\/(chatgpt\.com|chat\.openai\.com)\//.test(url)) {
     return;
