@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.6.18";
+  const VERSION = "1.6.19";
   // Allow reinject after extension reload / version bump
   if (globalThis.__CGPT_DL_BOOTED__ === VERSION) {
     globalThis.__CGPT_DL_ALIVE__ = true;
@@ -2377,6 +2377,296 @@
     });
   }
 
+  function isHttpUrl(value) {
+    return typeof value === "string" && /^https?:\/\//i.test(value.trim());
+  }
+
+  function normalizeHttpUrl(value) {
+    if (!value) return null;
+    let v = String(value).trim();
+    if (!v || v === "#" || v.startsWith("javascript:")) return null;
+    if (/\s/.test(v)) return null;
+    if (v.startsWith("//")) v = `https:${v}`;
+    if (!/^https?:\/\//i.test(v) && /^[\w-]+(\.[\w-]+)+/.test(v)) v = `https://${v}`;
+    if (!isHttpUrl(v)) return null;
+    if (/google\.com\/s2\/favicons|data:image/i.test(v)) return null;
+    try {
+      const abs = new URL(v, location.href);
+      const host = abs.hostname.toLowerCase();
+      // Skip ChatGPT app hosts (not citation targets). utm_source=chatgpt.com is fine.
+      if (
+        host === "chatgpt.com" ||
+        host.endsWith(".chatgpt.com") ||
+        host === "chat.openai.com" ||
+        host.endsWith(".oaistatic.com")
+      ) {
+        return null;
+      }
+      return abs.href;
+    } catch {
+      return v;
+    }
+  }
+
+  function hrefFromFaviconSrc(src) {
+    if (!src) return null;
+    try {
+      const u = new URL(src, location.href);
+      const domain = u.searchParams.get("domain");
+      if (!domain) return null;
+      return normalizeHttpUrl(domain);
+    } catch {
+      const m = String(src).match(/[?&]domain=([^&]+)/i);
+      if (!m) return null;
+      try {
+        return normalizeHttpUrl(decodeURIComponent(m[1]));
+      } catch {
+        return normalizeHttpUrl(m[1]);
+      }
+    }
+  }
+
+  function digUrlFromReact(el, depth = 0) {
+    if (!el || depth > 4) return null;
+    const keys = Object.keys(el);
+    for (const key of keys) {
+      if (!key.startsWith("__react")) continue;
+      const found = digUrlInValue(el[key], 0, new Set());
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function digUrlInValue(value, depth, seen) {
+    if (value == null || depth > 7) return null;
+    if (typeof value === "string") return normalizeHttpUrl(value);
+    if (typeof value !== "object") return null;
+    if (seen.has(value)) return null;
+    seen.add(value);
+    if (typeof value.href === "string") {
+      const href = normalizeHttpUrl(value.href);
+      if (href) return href;
+    }
+    for (const key of ["url", "permalink", "href", "link", "sourceUrl", "canonicalUrl"]) {
+      if (typeof value[key] === "string") {
+        const href = normalizeHttpUrl(value[key]);
+        if (href) return href;
+      }
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = digUrlInValue(item, depth + 1, seen);
+        if (found) return found;
+      }
+      return null;
+    }
+    for (const item of Object.values(value)) {
+      if (!item || typeof item === "function") continue;
+      const found = digUrlInValue(item, depth + 1, seen);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function resolveHrefFromLive(el) {
+    if (!(el instanceof Element)) return null;
+
+    if (el.tagName === "A") {
+      const href = normalizeHttpUrl(el.getAttribute("href") || el.href);
+      if (href) return href;
+    }
+
+    const nested = el.querySelector?.("a[href]");
+    if (nested) {
+      const href = normalizeHttpUrl(nested.getAttribute("href") || nested.href);
+      if (href) return href;
+    }
+
+    const closest = el.closest?.("a[href]");
+    if (closest && closest !== el) {
+      const href = normalizeHttpUrl(closest.getAttribute("href") || closest.href);
+      if (href) return href;
+    }
+
+    for (const attr of [
+      "href",
+      "data-href",
+      "data-url",
+      "data-permalink",
+      "data-source-url",
+      "data-testid-link",
+    ]) {
+      const href = normalizeHttpUrl(el.getAttribute(attr));
+      if (href) return href;
+    }
+
+    const fav = el.querySelector?.('img[src*="favicon"], img[src*="Favicon"]');
+    if (fav) {
+      const href = hrefFromFaviconSrc(fav.getAttribute("src") || fav.src);
+      if (href) return href;
+    }
+
+    const reactUrl = digUrlFromReact(el) || digUrlFromReact(el.parentElement);
+    if (reactUrl) return reactUrl;
+
+    // Domain-looking label on source chips (e.g. "enqa.eu")
+    const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+    if (text && text.length < 80 && !/\s/.test(text)) {
+      const fromText = normalizeHttpUrl(text);
+      if (fromText && /\./.test(fromText)) return fromText;
+    }
+
+    return null;
+  }
+
+  function styleExportLink(a) {
+    if (!(a instanceof HTMLElement)) return;
+    a.setAttribute("target", "_blank");
+    a.setAttribute("rel", "noopener noreferrer");
+    a.setAttribute("data-cgpt-dl-link", "1");
+    setImportant(a, "cursor", "pointer");
+    setImportant(a, "pointer-events", "auto");
+    // Keep ChatGPT dotted look when present; otherwise a light underline
+    const deco = (a.style.textDecoration || "").toLowerCase();
+    if (!deco || deco === "none") {
+      const dotted = a.querySelector?.('[data-d-text-decoration="underline-dotted"]');
+      if (!dotted) setImportant(a, "text-decoration", "underline");
+    }
+  }
+
+  /** Turn a non-anchor node into a real <a href>, preserving children/styles */
+  function ensureElementIsLink(el, href) {
+    const url = normalizeHttpUrl(href);
+    if (!el || !url) return null;
+
+    if (el.tagName === "A") {
+      el.setAttribute("href", url);
+      styleExportLink(el);
+      return el;
+    }
+
+    const existing = el.querySelector?.(":scope > a[href], a[href]");
+    if (existing && el.contains(existing)) {
+      // Prefer promoting the whole chip when the inner anchor is only a fragment
+      const existingHref = normalizeHttpUrl(existing.getAttribute("href") || existing.href);
+      if (existingHref) {
+        existing.setAttribute("href", existingHref);
+        styleExportLink(existing);
+        return existing;
+      }
+    }
+
+    const a = document.createElement("a");
+    a.setAttribute("href", url);
+    for (const { name, value } of [...el.attributes]) {
+      if (name === "href" || name === "type" || name === "role" || name === "tabindex") continue;
+      try {
+        a.setAttribute(name, value);
+      } catch {
+        /* ignore */
+      }
+    }
+    while (el.firstChild) a.appendChild(el.firstChild);
+    styleExportLink(a);
+    el.replaceWith(a);
+    return a;
+  }
+
+  /**
+   * ChatGPT citations / source chips are often popover triggers (JS), not <a href>.
+   * Recover URLs from nested anchors, React props, favicons, and domain labels.
+   */
+  function preserveHyperlinks(sourceRoot, cloneRoot) {
+    // Map visible labels → href from any real anchors still on the live reply
+    const labelHref = new Map();
+    qsa(sourceRoot, "a[href]").forEach((a) => {
+      const href = normalizeHttpUrl(a.getAttribute("href") || a.href);
+      if (!href) return;
+      const label = (a.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (label && label.length < 80) labelHref.set(label, href);
+    });
+
+    const pairAndLinkify = (srcNodes, dstNodes) => {
+      const n = Math.min(srcNodes.length, dstNodes.length);
+      for (let i = 0; i < n; i++) {
+        const src = srcNodes[i];
+        const dst = dstNodes[i];
+        if (!(dst instanceof Element)) continue;
+        if (dst.closest?.("a[href]")) {
+          styleExportLink(dst.closest("a[href]"));
+          continue;
+        }
+        let href = resolveHrefFromLive(src);
+        if (!href) {
+          const label = (src.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+          if (label && labelHref.has(label)) href = labelHref.get(label);
+        }
+        if (!href) continue;
+        // Prefer wrapping the trigger/chip, not a tiny inner span
+        const target =
+          dst.closest?.('[data-d-component="popover-trigger"], [data-d-component="badge"], [data-cgpt-dl-static]') ||
+          dst;
+        ensureElementIsLink(target, href);
+      }
+    };
+
+    pairAndLinkify(
+      qsa(sourceRoot, '[data-d-component="popover-trigger"], [aria-haspopup="dialog"]'),
+      qsa(cloneRoot, '[data-d-component="popover-trigger"], [aria-haspopup="dialog"]')
+    );
+
+    pairAndLinkify(
+      qsa(sourceRoot, '[data-d-text-decoration="underline-dotted"]'),
+      qsa(cloneRoot, '[data-d-text-decoration="underline-dotted"]')
+    );
+
+    // Source chips: URL often only exists as Google favicon ?domain=
+    const srcFavs = qsa(sourceRoot, 'img[src*="favicon"], img[src*="Favicon"]');
+    const dstFavs = qsa(cloneRoot, 'img[src*="favicon"], img[src*="Favicon"]');
+    const favN = Math.min(srcFavs.length, dstFavs.length);
+    for (let i = 0; i < favN; i++) {
+      const dstImg = dstFavs[i];
+      if (dstImg.closest("a[href]")) continue;
+
+      const srcHost =
+        srcFavs[i].closest(
+          '[data-d-component="badge"], [data-d-component="popover-trigger"], a, div, span'
+        ) || srcFavs[i].parentElement;
+
+      let href =
+        resolveHrefFromLive(srcHost) ||
+        hrefFromFaviconSrc(srcFavs[i].getAttribute("src") || srcFavs[i].src) ||
+        hrefFromFaviconSrc(dstImg.getAttribute("src") || dstImg.src);
+
+      const chip =
+        dstImg.closest(
+          '[data-d-component="badge"], [data-d-component="popover-trigger"], [data-cgpt-dl-static]'
+        ) || dstImg.parentElement?.parentElement;
+      if (!chip || chip.closest("a[href]")) continue;
+
+      if (!href) {
+        const label = (chip.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (label && labelHref.has(label)) href = labelHref.get(label);
+      }
+      if (!href) {
+        const domainText = (chip.textContent || "").match(
+          /\b(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)\b/i
+        );
+        if (domainText) href = normalizeHttpUrl(domainText[0]);
+      }
+      if (!href) continue;
+      ensureElementIsLink(chip, href);
+    }
+
+    // Final pass: polish every remaining anchor
+    qsa(cloneRoot, "a[href]").forEach((a) => {
+      const href = normalizeHttpUrl(a.getAttribute("href") || a.href);
+      if (!href) return;
+      a.setAttribute("href", href);
+      styleExportLink(a);
+    });
+  }
+
   /**
    * Code-block action bars hold the language title (JSON / YAML / Plain text).
    * Keep the title; drop Copy / wrap / sticky chrome.
@@ -2461,6 +2751,23 @@
   }
 
   function buttonToStaticDiv(btn) {
+    // Real anchors must stay <a href> — a div[href] is not navigable
+    if (btn.tagName === "A" && (btn.getAttribute("href") || btn.href)) {
+      const href = btn.getAttribute("href") || btn.href;
+      try {
+        btn.setAttribute("href", new URL(href, location.href).href);
+      } catch {
+        btn.setAttribute("href", href);
+      }
+      btn.setAttribute("target", "_blank");
+      btn.setAttribute("rel", "noopener noreferrer");
+      btn.setAttribute("data-cgpt-dl-static", "1");
+      btn.setAttribute("data-cgpt-dl-link", "1");
+      btn.removeAttribute("role");
+      btn.removeAttribute("tabindex");
+      return btn;
+    }
+
     const div = document.createElement("div");
     for (const { name, value } of [...btn.attributes]) {
       if (name === "type" || name === "disabled" || name === "tabindex") continue;
@@ -2868,6 +3175,18 @@
   display: none !important;
 }
 
+/* Recovered citation / source links */
+.cgpt-export a[data-cgpt-dl-link],
+.cgpt-export a[href^="http"] {
+  cursor: pointer !important;
+  pointer-events: auto !important;
+  color: inherit;
+}
+.cgpt-export a[data-cgpt-dl-link]:hover,
+.cgpt-export a[href^="http"]:hover {
+  opacity: 0.85;
+}
+
 /* Quick format selector / Dil option rows */
 .cgpt-export [data-d-component="pressable"][data-d-has-border],
 .cgpt-export [data-cgpt-dl-static][data-d-has-border] {
@@ -3123,6 +3442,7 @@ ${extraCss}
       await embedContentImages(content, clone);
       freezeInteractiveWidgets(content, clone);
       stripInteractiveNoise(clone);
+      preserveHyperlinks(content, clone);
       await refillEmptyImageTiles(content, clone);
       fixWritingBlockDuplicates(clone);
       stripFocusChrome(clone);
