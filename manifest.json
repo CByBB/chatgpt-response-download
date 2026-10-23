@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Response Download",
-  "version": "1.6.19",
+  "version": "1.6.28",
   "description": "Download ChatGPT responses as standalone HTML matching the on-screen render.",
   "icons": {
     "16": "icons/icon16.png",
@@ -27,7 +27,18 @@
     "https://images.openai.com/*",
     "https://*.oaiusercontent.com/*",
     "https://*.openai.com/*",
-    "https://*.oaistatic.com/*"
+    "https://*.oaistatic.com/*",
+    "https://www.google.com/*",
+    "https://*.gstatic.com/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["export/export.css"],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ]
+    }
   ],
   "content_scripts": [
     {
@@ -35,7 +46,16 @@
         "https://chatgpt.com/*",
         "https://chat.openai.com/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "js/util.js",
+        "js/export/inline-styles.js",
+        "js/export/polish.js",
+        "js/export/widgets.js",
+        "js/export/document.js",
+        "js/export/pipeline.js",
+        "js/ui.js",
+        "js/boot.js"
+      ],
       "css": ["content.css"],
       "run_at": "document_idle",
       "all_frames": false

@@ -8,9 +8,9 @@ Browser extension that adds a **Download** button on each ChatGPT reply. One cli
 2. Turn on **Developer mode**.
 3. Click **Load unpacked**.
 4. Select this folder (`Chatgpt.com`) — the one that contains `manifest.json`.
-5. Confirm the card shows **version 1.6.19** and no red error.
+5. Confirm the card shows **version 1.6.23** and no red error.
 6. Open [chatgpt.com](https://chatgpt.com), hard-refresh (`Ctrl+Shift+R`).
-7. Console check (`F12`): `[cgpt-dl] ready v1.6.19`
+7. Console check (`F12`): `[cgpt-dl] ready v1.6.23`
 
 After any code update: **Reload** the extension, then hard-refresh ChatGPT.
 
@@ -29,10 +29,14 @@ After any code update: **Reload** the extension, then hard-refresh ChatGPT.
 
 ## Files
 
-| File | Role |
+| Path | Role |
 |------|------|
 | `manifest.json` | Extension manifest (MV3) |
-| `background.js` | Reinject helper |
-| `content.js` | Finds replies, injects button, exports HTML |
-| `content.css` | Button styling |
+| `background.js` | Reinject helper + image fetch for base64 |
+| `content.css` | Live overlay download button |
+| `export/export.css` | Static rules embedded into downloaded HTML |
+| `js/util.js` | Shared helpers / version |
+| `js/ui.js` | Turn detection + download button |
+| `js/export/` | Inline styles, polish, widgets, document, pipeline |
+| `js/boot.js` | Version gate + start |
 | `icons/` | Extension icons |

@@ -37,6 +37,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return true; // async sendResponse
 });
 
+const CONTENT_SCRIPTS = [
+  "js/util.js",
+  "js/export/inline-styles.js",
+  "js/export/polish.js",
+  "js/export/widgets.js",
+  "js/export/document.js",
+  "js/export/pipeline.js",
+  "js/ui.js",
+  "js/boot.js",
+];
+
 async function injectIntoTab(tabId, url) {
   if (!url || !/^https:\/\/(chatgpt\.com|chat\.openai\.com)\//.test(url)) {
     return;
@@ -52,7 +63,7 @@ async function injectIntoTab(tabId, url) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["content.js"],
+      files: CONTENT_SCRIPTS,
     });
   } catch (err) {
     console.warn("[cgpt-dl] inject failed", err);
